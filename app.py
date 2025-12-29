@@ -9,43 +9,39 @@ from pydantic import BaseModel
 # -----------------------------
 # CONFIG
 # -----------------------------
-# Put index.faiss and chunks.pkl in the SAME folder as app.py (Render/local)
 INDEX_PATH = os.getenv("INDEX_PATH", "index.faiss")
 CHUNKS_PATH = os.getenv("CHUNKS_PATH", "chunks.pkl")
-
-# API key: set this in Render "Environment Variables"
-# If API_KEY is not set, endpoint will still work (no auth).
 API_KEY = os.getenv("API_KEY", "").strip()
 
 # -----------------------------
-# LOAD FILES (FAIL FAST)
+# GLOBALS (LAZY LOADING)
 # -----------------------------
-if not os.path.exists(INDEX_PATH):
-    raise RuntimeError(
-        f"Missing FAISS index file: {INDEX_PATH}\n"
-        f"Fix: Ensure '{INDEX_PATH}' is deployed alongside app.py, "
-        f"or set INDEX_PATH env var to the correct location."
-    )
+index = None
+chunks = None
+embedder = None
 
-if not os.path.exists(CHUNKS_PATH):
-    raise RuntimeError(
-        f"Missing chunks pickle file: {CHUNKS_PATH}\n"
-        f"Fix: Ensure '{CHUNKS_PATH}' is deployed alongside app.py, "
-        f"or set CHUNKS_PATH env var to the correct location."
-    )
+def load_resources():
+    """
+    Load heavy resources ONLY when needed (FREE plan safe)
+    """
+    global index, chunks, embedder
 
-index = faiss.read_index(INDEX_PATH)
+    if embedder is None:
+        embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-with open(CHUNKS_PATH, "rb") as f:
-    chunks = pickle.load(f)
+    if index is None:
+        if not os.path.exists(INDEX_PATH):
+            raise RuntimeError(f"Missing FAISS index file: {INDEX_PATH}")
+        index = faiss.read_index(INDEX_PATH)
 
-if not isinstance(chunks, list) or len(chunks) == 0:
-    raise RuntimeError("chunks.pkl loaded but is empty or not a list.")
+    if chunks is None:
+        if not os.path.exists(CHUNKS_PATH):
+            raise RuntimeError(f"Missing chunks file: {CHUNKS_PATH}")
+        with open(CHUNKS_PATH, "rb") as f:
+            chunks = pickle.load(f)
 
-# -----------------------------
-# MODEL
-# -----------------------------
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
+        if not isinstance(chunks, list) or len(chunks) == 0:
+            raise RuntimeError("chunks.pkl is empty or invalid")
 
 # -----------------------------
 # API
@@ -58,16 +54,17 @@ class Question(BaseModel):
 
 @app.get("/health")
 def health():
+    """
+    Lightweight health check (NO heavy loading)
+    """
     return {
         "status": "ok",
-        "index_file": INDEX_PATH,
-        "chunks": len(chunks),
-        "auth_enabled": bool(API_KEY),
+        "auth_enabled": bool(API_KEY)
     }
 
 @app.post("/ask")
 def ask_api(data: Question, x_api_key: str = Header(default="")):
-    # --- API KEY CHECK ---
+    # --- AUTH ---
     if API_KEY:
         if not x_api_key or x_api_key.strip() != API_KEY:
             raise HTTPException(status_code=401, detail="Invalid API key")
@@ -76,12 +73,14 @@ def ask_api(data: Question, x_api_key: str = Header(default="")):
     if not q:
         raise HTTPException(status_code=400, detail="question is required")
 
-    k = int(data.k) if data.k else 5
-    k = max(1, min(k, 20))  # safety cap
+    k = max(1, min(int(data.k), 20))
+
+    # --- LOAD HEAVY RESOURCES (ON DEMAND) ---
+    load_resources()
 
     # --- SEARCH ---
     q_emb = embedder.encode([q])
-    q_emb = np.asarray(q_emb, dtype=np.float32)  # FAISS expects float32
+    q_emb = np.asarray(q_emb, dtype=np.float32)
     _, idx = index.search(q_emb, k)
 
     if idx.size == 0 or idx[0][0] < 0:
@@ -94,11 +93,9 @@ def ask_api(data: Question, x_api_key: str = Header(default="")):
     if not text:
         return {"answer": "This question is not answered in the given textbook."}
 
-    # limit answer length for API
     answer = text[:500] + ("..." if len(text) > 500 else "")
 
     return {
         "answer": f"• {answer}",
-        "reference": f"Punjab Textbook Board | {book}",
+        "reference": f"Punjab Textbook Board | {book}"
     }
-
