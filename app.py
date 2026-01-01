@@ -22,7 +22,7 @@ embedder = None
 
 def load_resources():
     """
-    Load heavy resources ONLY when needed (FREE plan safe)
+    Load heavy resources ONLY when needed (Render FREE plan safe)
     """
     global index, chunks, embedder
 
@@ -63,35 +63,61 @@ def health():
     }
 
 @app.post("/ask")
-def ask_api(data: Question, x_api_key: str = Header(default="")):
-    # --- AUTH ---
+def ask_api(
+    data: Question,
+    x_api_key: str = Header(default=None, alias="x-api-key")
+):
+    # -----------------------------
+    # AUTH (FIXED)
+    # -----------------------------
     if API_KEY:
-        if not x_api_key or x_api_key.strip() != API_KEY:
-            raise HTTPException(status_code=401, detail="Invalid API key")
+        if x_api_key is None:
+            raise HTTPException(
+                status_code=401,
+                detail="API key missing. Send it in 'x-api-key' header."
+            )
 
+        if x_api_key.strip() != API_KEY:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid API key"
+            )
+
+    # -----------------------------
+    # VALIDATION
+    # -----------------------------
     q = (data.question or "").strip()
     if not q:
         raise HTTPException(status_code=400, detail="question is required")
 
     k = max(1, min(int(data.k), 20))
 
-    # --- LOAD HEAVY RESOURCES (ON DEMAND) ---
+    # -----------------------------
+    # LOAD HEAVY RESOURCES (ON DEMAND)
+    # -----------------------------
     load_resources()
 
-    # --- SEARCH ---
+    # -----------------------------
+    # SEARCH
+    # -----------------------------
     q_emb = embedder.encode([q])
     q_emb = np.asarray(q_emb, dtype=np.float32)
+
     _, idx = index.search(q_emb, k)
 
     if idx.size == 0 or idx[0][0] < 0:
-        return {"answer": "This question is not answered in the given textbook."}
+        return {
+            "answer": "This question is not answered in the given textbook."
+        }
 
     ctx = chunks[int(idx[0][0])]
     text = (ctx.get("text", "") if isinstance(ctx, dict) else str(ctx)).strip()
     book = ctx.get("book", "Unknown Book") if isinstance(ctx, dict) else "Unknown Book"
 
     if not text:
-        return {"answer": "This question is not answered in the given textbook."}
+        return {
+            "answer": "This question is not answered in the given textbook."
+        }
 
     answer = text[:500] + ("..." if len(text) > 500 else "")
 
