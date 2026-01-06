@@ -2,7 +2,7 @@ fastapi
 uvicorn
 faiss-cpu
 sentence-transformers
-numpy
 pydantic
+numpy<2
 torch==2.2.2+cpu
 --extra-index-url https://download.pytorch.org/whl/cpu
