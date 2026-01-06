@@ -22,26 +22,34 @@ embedder = None
 
 def load_resources():
     """
-    Load heavy resources ONLY when needed (Render FREE plan safe)
+    Load heavy resources ONLY when needed (Railway/Render safe)
     """
     global index, chunks, embedder
 
-    if embedder is None:
-        embedder = SentenceTransformer("all-MiniLM-L6-v2")
+    try:
+        if embedder is None:
+            embedder = SentenceTransformer(
+                "all-MiniLM-L6-v2",
+                device="cpu"   # ✅ FORCE CPU (very important)
+            )
 
-    if index is None:
-        if not os.path.exists(INDEX_PATH):
-            raise RuntimeError(f"Missing FAISS index file: {INDEX_PATH}")
-        index = faiss.read_index(INDEX_PATH)
+        if index is None:
+            if not os.path.exists(INDEX_PATH):
+                raise RuntimeError(f"Missing FAISS index file: {INDEX_PATH}")
+            index = faiss.read_index(INDEX_PATH)
 
-    if chunks is None:
-        if not os.path.exists(CHUNKS_PATH):
-            raise RuntimeError(f"Missing chunks file: {CHUNKS_PATH}")
-        with open(CHUNKS_PATH, "rb") as f:
-            chunks = pickle.load(f)
+        if chunks is None:
+            if not os.path.exists(CHUNKS_PATH):
+                raise RuntimeError(f"Missing chunks file: {CHUNKS_PATH}")
+            with open(CHUNKS_PATH, "rb") as f:
+                chunks = pickle.load(f)
 
-        if not isinstance(chunks, list) or len(chunks) == 0:
-            raise RuntimeError("chunks.pkl is empty or invalid")
+            if not isinstance(chunks, list) or len(chunks) == 0:
+                raise RuntimeError("chunks.pkl is empty or invalid")
+
+    except Exception as e:
+        # ✅ Instead of crashing server, return JSON error
+        raise HTTPException(status_code=500, detail=f"Model loading failed: {str(e)}")
 
 # -----------------------------
 # API
@@ -68,7 +76,7 @@ def ask_api(
     x_api_key: str = Header(default=None, alias="x-api-key")
 ):
     # -----------------------------
-    # AUTH (FIXED)
+    # AUTH
     # -----------------------------
     if API_KEY:
         if x_api_key is None:
@@ -93,7 +101,7 @@ def ask_api(
     k = max(1, min(int(data.k), 20))
 
     # -----------------------------
-    # LOAD HEAVY RESOURCES (ON DEMAND)
+    # LOAD HEAVY RESOURCES
     # -----------------------------
     load_resources()
 
