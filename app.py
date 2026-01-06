@@ -11,7 +11,9 @@ from pydantic import BaseModel
 # -----------------------------
 INDEX_PATH = os.getenv("INDEX_PATH", "index.faiss")
 CHUNKS_PATH = os.getenv("CHUNKS_PATH", "chunks.pkl")
-API_KEY = os.getenv("API_KEY", "").strip()
+
+def get_api_key():
+    return os.getenv("API_KEY", "").strip()
 
 # -----------------------------
 # GLOBALS (LAZY LOADING)
@@ -22,7 +24,7 @@ embedder = None
 
 def load_resources():
     """
-    Load heavy resources ONLY when needed (Railway/Render safe)
+    Load heavy resources ONLY when needed (Railway safe)
     """
     global index, chunks, embedder
 
@@ -30,7 +32,7 @@ def load_resources():
         if embedder is None:
             embedder = SentenceTransformer(
                 "all-MiniLM-L6-v2",
-                device="cpu"   # ✅ FORCE CPU (very important)
+                device="cpu"
             )
 
         if index is None:
@@ -48,7 +50,6 @@ def load_resources():
                 raise RuntimeError("chunks.pkl is empty or invalid")
 
     except Exception as e:
-        # ✅ Instead of crashing server, return JSON error
         raise HTTPException(status_code=500, detail=f"Model loading failed: {str(e)}")
 
 # -----------------------------
@@ -60,14 +61,16 @@ class Question(BaseModel):
     question: str
     k: int = 5
 
+@app.get("/")
+def root():
+    return {"message": "Punjab Textbook QA API is running"}
+
 @app.get("/health")
 def health():
-    """
-    Lightweight health check (NO heavy loading)
-    """
+    api_key = get_api_key()
     return {
         "status": "ok",
-        "auth_enabled": bool(API_KEY)
+        "auth_enabled": bool(api_key)
     }
 
 @app.post("/ask")
@@ -78,18 +81,13 @@ def ask_api(
     # -----------------------------
     # AUTH
     # -----------------------------
-    if API_KEY:
-        if x_api_key is None:
-            raise HTTPException(
-                status_code=401,
-                detail="API key missing. Send it in 'x-api-key' header."
-            )
+    api_key = get_api_key()
 
-        if x_api_key.strip() != API_KEY:
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid API key"
-            )
+    if api_key:
+        if x_api_key is None:
+            raise HTTPException(status_code=401, detail="API key missing")
+        if x_api_key.strip() != api_key:
+            raise HTTPException(status_code=401, detail="Invalid API key")
 
     # -----------------------------
     # VALIDATION
@@ -114,18 +112,14 @@ def ask_api(
     _, idx = index.search(q_emb, k)
 
     if idx.size == 0 or idx[0][0] < 0:
-        return {
-            "answer": "This question is not answered in the given textbook."
-        }
+        return {"answer": "This question is not answered in the given textbook."}
 
     ctx = chunks[int(idx[0][0])]
     text = (ctx.get("text", "") if isinstance(ctx, dict) else str(ctx)).strip()
     book = ctx.get("book", "Unknown Book") if isinstance(ctx, dict) else "Unknown Book"
 
     if not text:
-        return {
-            "answer": "This question is not answered in the given textbook."
-        }
+        return {"answer": "This question is not answered in the given textbook."}
 
     answer = text[:500] + ("..." if len(text) > 500 else "")
 
